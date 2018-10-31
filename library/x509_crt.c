@@ -50,6 +50,10 @@
 #include "mbedtls/pem.h"
 #endif
 
+#if defined(MBEDTLS_USE_PSA_CRYPTO)
+#include "psa/crypto.h"
+#endif
+
 #if defined(MBEDTLS_PLATFORM_C)
 #include "mbedtls/platform.h"
 #else
@@ -1885,6 +1889,49 @@ static int x509_name_cmp( const mbedtls_x509_name *a, const mbedtls_x509_name *b
     /* a == NULL == b */
     return( 0 );
 }
+#if defined(MBEDTLS_USE_PSA_CRYPTO)
+static psa_algorithm_t translate_md_to_psa( mbedtls_md_type_t md_alg )
+{
+    switch( md_alg )
+    {
+#if defined(MBEDTLS_MD2_C)
+    case MBEDTLS_MD_MD2:
+        return( PSA_ALG_MD2 );
+#endif
+#if defined(MBEDTLS_MD4_C)
+    case MBEDTLS_MD_MD4:
+        return( PSA_ALG_MD4 );
+#endif
+#if defined(MBEDTLS_MD5_C)
+    case MBEDTLS_MD_MD5:
+        return( PSA_ALG_MD5 );
+#endif
+#if defined(MBEDTLS_SHA1_C)
+    case MBEDTLS_MD_SHA1:
+        return( PSA_ALG_SHA_1 );
+#endif
+#if defined(MBEDTLS_SHA256_C)
+    case MBEDTLS_MD_SHA224:
+        return( PSA_ALG_SHA_224 );
+    case MBEDTLS_MD_SHA256:
+        return( PSA_ALG_SHA_256 );
+#endif
+#if defined(MBEDTLS_SHA512_C)
+    case MBEDTLS_MD_SHA384:
+        return( PSA_ALG_SHA_384 );
+    case MBEDTLS_MD_SHA512:
+        return( PSA_ALG_SHA_512 );
+#endif
+#if defined(MBEDTLS_RIPEMD160_C)
+    case MBEDTLS_MD_RIPEMD160:
+        return( PSA_ALG_RIPEMD160 );
+#endif
+    case MBEDTLS_MD_NONE:  // Intentional fallthrough
+    default:
+        return( 0 );
+    }
+}
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
 
 /*
  * Check the signature of a certificate by its parent
@@ -1893,16 +1940,36 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
                                      mbedtls_x509_crt *parent,
                                      mbedtls_x509_crt_restart_ctx *rs_ctx )
 {
-    const mbedtls_md_info_t *md_info;
     unsigned char hash[MBEDTLS_MD_MAX_SIZE];
-
+    size_t hash_len;
+    /* Note: hash errors can happen only after an internal error */
+#if !defined(MBEDTLS_USE_PSA_CRYPTO)
+    const mbedtls_md_info_t *md_info;
     md_info = mbedtls_md_info_from_type( child->sig_md );
+    hash_len = mbedtls_md_get_size( md_info );
     if( mbedtls_md( md_info, child->tbs.p, child->tbs.len, hash ) != 0 )
+        return( -1 );
+#else
+    psa_hash_operation_t hash_operation;
+    psa_algorithm_t hash_alg = translate_md_to_psa( child->sig_md );
+
+    if( psa_hash_setup( &hash_operation, hash_alg ) != PSA_SUCCESS )
+        return( -1 );
+
+    if( psa_hash_update( &hash_operation, child->tbs.p, child->tbs.len )
+        != PSA_SUCCESS )
     {
-        /* Note: this can't happen except after an internal error */
+        psa_hash_abort( &hash_operation );
         return( -1 );
     }
 
+    if( psa_hash_finish( &hash_operation, hash, sizeof( hash ), &hash_len )
+        != PSA_SUCCESS )
+    {
+        psa_hash_abort( &hash_operation );
+        return( -1 );
+    }
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
     /* Skip expensive computation on obvious mismatch */
     if( ! mbedtls_pk_can_do( &parent->pk, child->sig_pk ) )
         return( -1 );
@@ -1911,7 +1978,7 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
     if( rs_ctx != NULL && child->sig_pk == MBEDTLS_PK_ECDSA )
     {
         return( mbedtls_pk_verify_restartable( &parent->pk,
-                    child->sig_md, hash, mbedtls_md_get_size( md_info ),
+                    child->sig_md, hash, hash_len,
                     child->sig.p, child->sig.len, &rs_ctx->pk ) );
     }
 #else
@@ -1919,7 +1986,7 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
 #endif
 
     return( mbedtls_pk_verify_ext( child->sig_pk, child->sig_opts, &parent->pk,
-                child->sig_md, hash, mbedtls_md_get_size( md_info ),
+                child->sig_md, hash, hash_len,
                 child->sig.p, child->sig.len ) );
 }
 

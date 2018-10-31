@@ -37,6 +37,10 @@
 #include "mbedtls/asn1write.h"
 #include "mbedtls/platform_util.h"
 
+#if defined(MBEDTLS_USE_PSA_CRYPTO)
+#include "psa/crypto.h"
+#endif
+
 #include <string.h>
 #include <stdlib.h>
 
@@ -122,6 +126,50 @@ int mbedtls_x509write_csr_set_ns_cert_type( mbedtls_x509write_csr *ctx,
     return( 0 );
 }
 
+#if defined(MBEDTLS_USE_PSA_CRYPTO)
+static psa_algorithm_t translate_md_to_psa( mbedtls_md_type_t md_alg )
+{
+    switch( md_alg )
+    {
+#if defined(MBEDTLS_MD2_C)
+    case MBEDTLS_MD_MD2:
+        return( PSA_ALG_MD2 );
+#endif
+#if defined(MBEDTLS_MD4_C)
+    case MBEDTLS_MD_MD4:
+        return( PSA_ALG_MD4 );
+#endif
+#if defined(MBEDTLS_MD5_C)
+    case MBEDTLS_MD_MD5:
+        return( PSA_ALG_MD5 );
+#endif
+#if defined(MBEDTLS_SHA1_C)
+    case MBEDTLS_MD_SHA1:
+        return( PSA_ALG_SHA_1 );
+#endif
+#if defined(MBEDTLS_SHA256_C)
+    case MBEDTLS_MD_SHA224:
+        return( PSA_ALG_SHA_224 );
+    case MBEDTLS_MD_SHA256:
+        return( PSA_ALG_SHA_256 );
+#endif
+#if defined(MBEDTLS_SHA512_C)
+    case MBEDTLS_MD_SHA384:
+        return( PSA_ALG_SHA_384 );
+    case MBEDTLS_MD_SHA512:
+        return( PSA_ALG_SHA_512 );
+#endif
+#if defined(MBEDTLS_RIPEMD160_C)
+    case MBEDTLS_MD_RIPEMD160:
+        return( PSA_ALG_RIPEMD160 );
+#endif
+    case MBEDTLS_MD_NONE:  // Intentional fallthrough
+    default:
+        return( 0 );
+    }
+}
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
+
 int mbedtls_x509write_csr_der( mbedtls_x509write_csr *ctx, unsigned char *buf, size_t size,
                        int (*f_rng)(void *, unsigned char *, size_t),
                        void *p_rng )
@@ -136,7 +184,11 @@ int mbedtls_x509write_csr_der( mbedtls_x509write_csr *ctx, unsigned char *buf, s
     size_t pub_len = 0, sig_and_oid_len = 0, sig_len;
     size_t len = 0;
     mbedtls_pk_type_t pk_alg;
-
+#if defined(MBEDTLS_USE_PSA_CRYPTO)
+    psa_hash_operation_t hash_operation;
+    size_t hash_len;
+    psa_algorithm_t hash_alg = translate_md_to_psa(ctx->md_alg);
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
     /*
      * Prepare data to be signed in tmp_buf
      */
@@ -187,9 +239,25 @@ int mbedtls_x509write_csr_der( mbedtls_x509write_csr *ctx, unsigned char *buf, s
 
     /*
      * Prepare signature
+     * Note: hash errors can happen only after an internal error
      */
-    mbedtls_md( mbedtls_md_info_from_type( ctx->md_alg ), c, len, hash );
+#if defined(MBEDTLS_USE_PSA_CRYPTO)
+    if( psa_hash_setup( &hash_operation, hash_alg ) != PSA_SUCCESS )
+        return( MBEDTLS_ERR_X509_FATAL_ERROR );
 
+    if( psa_hash_update( &hash_operation, c, len) != PSA_SUCCESS )
+    {
+        psa_hash_abort( &hash_operation );
+        return( MBEDTLS_ERR_X509_FATAL_ERROR );
+    }
+    if( psa_hash_finish( &hash_operation, hash, sizeof( hash ), &hash_len )
+        != PSA_SUCCESS) {
+        psa_hash_abort( &hash_operation );
+        return( MBEDTLS_ERR_X509_FATAL_ERROR );
+    }
+#else /* MBEDTLS_USE_PSA_CRYPTO */
+    mbedtls_md( mbedtls_md_info_from_type( ctx->md_alg ), c, len, hash );
+#endif
     if( ( ret = mbedtls_pk_sign( ctx->key, ctx->md_alg, hash, 0, sig, &sig_len,
                                  f_rng, p_rng ) ) != 0 )
     {

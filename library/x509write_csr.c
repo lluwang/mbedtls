@@ -187,7 +187,7 @@ int mbedtls_x509write_csr_der( mbedtls_x509write_csr *ctx, unsigned char *buf, s
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
     psa_hash_operation_t hash_operation;
     size_t hash_len;
-    psa_algorithm_t hash_alg = translate_md_to_psa(ctx->md_alg);
+    psa_algorithm_t hash_alg = translate_md_to_psa( ctx->md_alg );
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
     /*
      * Prepare data to be signed in tmp_buf
@@ -251,7 +251,8 @@ int mbedtls_x509write_csr_der( mbedtls_x509write_csr *ctx, unsigned char *buf, s
         return( MBEDTLS_ERR_X509_FATAL_ERROR );
     }
     if( psa_hash_finish( &hash_operation, hash, sizeof( hash ), &hash_len )
-        != PSA_SUCCESS) {
+        != PSA_SUCCESS )
+    {
         psa_hash_abort( &hash_operation );
         return( MBEDTLS_ERR_X509_FATAL_ERROR );
     }
